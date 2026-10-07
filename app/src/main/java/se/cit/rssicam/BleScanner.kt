@@ -46,6 +46,9 @@ class BleScanner(context: Context) {
     private fun handle(r: ScanResult) {
         val now = SystemClock.elapsedRealtime()
         val addr = r.device?.address ?: return
+        // Android reports 127 (or other non-negative values) when the RSSI is unknown; never let
+        // those into the history or the 5 s average.
+        if (r.rssi >= 0 || r.rssi < -127) return
         val rec = r.scanRecord
         val name = rec?.deviceName ?: runCatching { r.device.name }.getOrNull()
         val tx = if (r.txPower != ScanResult.TX_POWER_NOT_PRESENT) r.txPower else rec?.txPowerLevel?.takeIf { it != Int.MIN_VALUE }
