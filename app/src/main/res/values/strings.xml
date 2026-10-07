@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RSSI Cam</string>
+    <string name="capture">拍照 + 记录RSSI</string>
+    <string name="set_ref">标记参考点</string>
+    <string name="session_hint">房间/会话名 (文件夹名)</string>
+    <string name="status_init">正在初始化 ARCore…</string>
+</resources>
