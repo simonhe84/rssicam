@@ -163,8 +163,8 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             planeFindingMode = Config.PlaneFindingMode.DISABLED
             lightEstimationMode = Config.LightEstimationMode.DISABLED
             depthMode = Config.DepthMode.DISABLED
-            augmentedImageDatabase = buildMarkerDatabase(s)
         }
+        buildMarkerDatabase(s)?.let { cfg.augmentedImageDatabase = it }
         s.configure(cfg)
 
         // sensor orientation of the camera ARCore uses -> for EXIF orientation
