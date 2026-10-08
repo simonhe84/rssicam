@@ -16,6 +16,8 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.exifinterface.media.ExifInterface
 import com.google.ar.core.ArCoreApk
+import com.google.ar.core.AugmentedImage
+import com.google.ar.core.AugmentedImageDatabase
 import com.google.ar.core.CameraConfig
 import com.google.ar.core.CameraConfigFilter
 import com.google.ar.core.Config
@@ -24,6 +26,7 @@ import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
 import com.google.ar.core.exceptions.CameraNotAvailableException
 import com.google.ar.core.exceptions.UnavailableException
+import org.json.JSONArray
 import org.json.JSONObject
 import se.cit.rssicam.databinding.ActivityMainBinding
 import java.util.EnumSet
@@ -58,6 +61,12 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     @Volatile private var trackingState: TrackingState = TrackingState.STOPPED
     @Volatile private var trackingReason: String = ""
     @Volatile private var refPose: Pose? = null
+
+    /** Printed markers (assets/markers/marker_N.png, 150 mm incl. white border) tracked by ARCore. */
+    private class MarkerState(val name: String, var pose: Pose, var extentX: Float, var extentZ: Float,
+                              var method: String, var seenMs: Long)
+    private val markers = java.util.concurrent.ConcurrentHashMap<String, MarkerState>()
+    private var markerDbCount = 0
     @Volatile private var sessionName: String = "room1"
     private var captureCount = 0
     private var lastUiUpdate = 0L
@@ -154,6 +163,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             planeFindingMode = Config.PlaneFindingMode.DISABLED
             lightEstimationMode = Config.LightEstimationMode.DISABLED
             depthMode = Config.DepthMode.DISABLED
+            augmentedImageDatabase = buildMarkerDatabase(s)
         }
         s.configure(cfg)
 
@@ -163,6 +173,24 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             val ch = cm.getCameraCharacteristics(s.cameraConfig.cameraId)
             sensorOrientation = ch.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
         }
+    }
+
+    /** Register assets/markers/*.png as ARCore Augmented Images (physical width = MARKER_WIDTH_M). */
+    private fun buildMarkerDatabase(s: Session): AugmentedImageDatabase? {
+        val db = AugmentedImageDatabase(s)
+        var n = 0
+        val names = runCatching { assets.list("markers")?.toList() }.getOrNull() ?: emptyList()
+        for (f in names.filter { it.endsWith(".png") }.sorted()) {
+            try {
+                val bmp = assets.open("markers/$f").use { android.graphics.BitmapFactory.decodeStream(it) }
+                db.addImage(f.removeSuffix(".png"), bmp, MARKER_WIDTH_M)
+                n++
+            } catch (e: Exception) {
+                android.util.Log.w("RSSICam", "marker $f rejected: ${e.message}")
+            }
+        }
+        markerDbCount = n
+        return if (n > 0) db else null
     }
 
     override fun onPause() {
@@ -240,6 +268,16 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         trackingReason = if (trackingState != TrackingState.TRACKING) camera.trackingFailureReason.toString() else ""
         if (trackingState == TrackingState.TRACKING) lastPose = camera.pose
 
+        // printed markers
+        val nowMs = System.currentTimeMillis()
+        for (img in frame.getUpdatedTrackables(AugmentedImage::class.java)) {
+            if (img.trackingState != TrackingState.TRACKING) continue
+            val st = markers[img.name]
+            val method = img.trackingMethod.toString()
+            if (st == null) markers[img.name] = MarkerState(img.name, img.centerPose, img.extentX, img.extentZ, method, nowMs)
+            else { st.pose = img.centerPose; st.extentX = img.extentX; st.extentZ = img.extentZ; st.method = method; st.seenMs = nowMs }
+        }
+
         if (captureRequested.compareAndSet(true, false)) {
             doCapture(frame, camera.pose, camera.displayOrientedPose)
         }
@@ -277,6 +315,22 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             meta.put("pose_rel_ref", poseJson(r.inverse().compose(pose)))
         }
         meta.put("display_rotation_deg", displayRotation() * 90)
+        // markers: pose of each printed marker's centre in the ARCore world frame.
+        // ARCore convention: +X = image right, +Y = out of the image (normal), +Z = image bottom.
+        val mk = JSONArray()
+        val tNow = System.currentTimeMillis()
+        for (st in markers.values.sortedBy { it.name }) {
+            mk.put(JSONObject().apply {
+                put("name", st.name)
+                put("pose", poseJson(st.pose))
+                put("extent_x", st.extentX.toDouble()); put("extent_z", st.extentZ.toDouble())
+                put("tracking_method", st.method)
+                put("age_ms", tNow - st.seenMs)
+                refPose?.let { r -> put("pose_rel_ref", poseJson(r.inverse().compose(st.pose))) }
+            })
+        }
+        meta.put("markers", mk)
+        meta.put("marker_db_count", markerDbCount)
         meta.put("sensor_orientation_deg", sensorOrientation)
         meta.put("intrinsics", JSONObject().apply {
             put("fx", intr.focalLength[0]); put("fy", intr.focalLength[1])
@@ -345,6 +399,13 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             .append("  (scan age ").append(wifi.optLong("last_scan_age_ms") / 1000).append(" s)\n")
         sb.append("BLE devs: ").append(ble.optInt("count"))
         if (!ble.optBoolean("scanning")) sb.append("  [BLE 未扫描/蓝牙关闭?]")
+        if (markerDbCount > 0) {
+            val t = System.currentTimeMillis()
+            val seen = markers.values.sortedBy { it.name }.joinToString(" ") {
+                it.name.removePrefix("marker_") + if (t - it.seenMs < 1500) "" else "(old)"
+            }
+            sb.append("\nMarkers: ").append(if (seen.isEmpty()) "none" else seen)
+        } else sb.append("\nMarkers: db empty")
         sb.append("\nCaptured: ").append(captureCount)
         binding.statusText.text = sb.toString()
     }
@@ -353,5 +414,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     companion object {
         private const val REQ_PERMS = 1001
+        /** physical width of the printed marker image INCLUDING its white border (120 mm black + 2×15 mm). */
+        private const val MARKER_WIDTH_M = 0.150f
     }
 }
