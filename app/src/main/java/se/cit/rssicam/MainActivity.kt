@@ -175,7 +175,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         }
     }
 
-    /** Register assets/markers/*.png as ARCore Augmented Images (physical width = MARKER_WIDTH_M). */
+    /** Register the PNG files under assets/markers as ARCore Augmented Images (physical width = MARKER_WIDTH_M). */
     private fun buildMarkerDatabase(s: Session): AugmentedImageDatabase? {
         val db = AugmentedImageDatabase(s)
         var n = 0
