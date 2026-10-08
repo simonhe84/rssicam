@@ -32,7 +32,25 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build debug APK
-        run: chmod +x gradlew && ./gradlew assembleDebug --no-daemon --stacktrace
+        id: build
+        continue-on-error: true
+        run: |
+          chmod +x gradlew
+          set -o pipefail
+          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
+
+      # Always publish the build log to the rolling release (Actions logs live on Azure
+      # blob storage which the dev sandbox cannot reach).
+      - name: Publish build log
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view latest >/dev/null 2>&1 || gh release create latest --title "RSSICam latest debug build" --notes "Auto-built from main" --prerelease
+          gh release upload latest build.log --clobber
+
+      - name: Fail if build failed
+        if: steps.build.outcome != 'success'
+        run: exit 1
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
